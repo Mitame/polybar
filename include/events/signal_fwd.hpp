@@ -51,9 +51,7 @@ namespace signals {
     struct attribute_toggle;
     struct action_begin;
     struct action_end;
-    struct write_text_ascii;
-    struct write_text_unicode;
-    struct write_text_string;
+    struct text;
   }
 }
 

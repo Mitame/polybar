@@ -180,35 +180,49 @@ bar::bar(connection& conn, signal_emitter& emitter, const config& config, const 
     }
   }
 
-  // Load foreground/background
-  m_opts.background = color::parse(m_conf.get(bs, "background", color_util::hex<uint16_t>(m_opts.background)));
-  m_opts.foreground = color::parse(m_conf.get(bs, "foreground", color_util::hex<uint16_t>(m_opts.foreground)));
+  // Load background
+  for (auto&& step : m_conf.get_list<rgba>(bs, "background", {})) {
+    m_opts.background_steps.emplace_back(step);
+  }
+
+  if (!m_opts.background_steps.empty()) {
+    m_opts.background = m_opts.background_steps[0];
+
+    if (m_conf.has(bs, "background")) {
+      m_log.warn("Ignoring `%s.background` (overridden by gradient background)", bs);
+    }
+  } else {
+    m_opts.background = color_util::parse(m_conf.get(bs, "background", ""s), m_opts.background);
+  }
+
+  // Load foreground
+  m_opts.foreground = color_util::parse(m_conf.get(bs, "foreground", ""s), m_opts.foreground);
 
   // Load over-/underline color and size (warn about deprecated params if used)
-  auto line_color = color::parse(m_conf.get(bs, "line-color", "#f00"s));
+  auto line_color = m_conf.get(bs, "line-color", "#f00"s);
   auto line_size = m_conf.get(bs, "line-size", 0);
 
   m_opts.overline.size = m_conf.get(bs, "overline-size", line_size);
-  m_opts.overline.color = color::parse(m_conf.get(bs, "overline-color", line_color));
+  m_opts.overline.color = color_util::parse(m_conf.get(bs, "overline-color", line_color));
   m_opts.underline.size = m_conf.get(bs, "underline-size", line_size);
-  m_opts.underline.color = color::parse(m_conf.get(bs, "underline-color", line_color));
+  m_opts.underline.color = color_util::parse(m_conf.get(bs, "underline-color", line_color));
 
   // Load border settings
   auto border_size = m_conf.get(bs, "border-size", 0);
-  auto border_color = m_conf.get(bs, "border-color", "#00000000"s);
+  auto border_color = m_conf.get(bs, "border-color", ""s);
 
   m_opts.borders.emplace(edge::TOP, border_settings{});
   m_opts.borders[edge::TOP].size = m_conf.deprecated(bs, "border-top", "border-top-size", border_size);
-  m_opts.borders[edge::TOP].color = color::parse(m_conf.get(bs, "border-top-color", border_color));
+  m_opts.borders[edge::TOP].color = color_util::parse(m_conf.get(bs, "border-top-color", border_color));
   m_opts.borders.emplace(edge::BOTTOM, border_settings{});
   m_opts.borders[edge::BOTTOM].size = m_conf.deprecated(bs, "border-bottom", "border-bottom-size", border_size);
-  m_opts.borders[edge::BOTTOM].color = color::parse(m_conf.get(bs, "border-bottom-color", border_color));
+  m_opts.borders[edge::BOTTOM].color = color_util::parse(m_conf.get(bs, "border-bottom-color", border_color));
   m_opts.borders.emplace(edge::LEFT, border_settings{});
   m_opts.borders[edge::LEFT].size = m_conf.deprecated(bs, "border-left", "border-left-size", border_size);
-  m_opts.borders[edge::LEFT].color = color::parse(m_conf.get(bs, "border-left-color", border_color));
+  m_opts.borders[edge::LEFT].color = color_util::parse(m_conf.get(bs, "border-left-color", border_color));
   m_opts.borders.emplace(edge::RIGHT, border_settings{});
   m_opts.borders[edge::RIGHT].size = m_conf.deprecated(bs, "border-right", "border-right-size", border_size);
-  m_opts.borders[edge::RIGHT].color = color::parse(m_conf.get(bs, "border-right-color", border_color));
+  m_opts.borders[edge::RIGHT].color = color_util::parse(m_conf.get(bs, "border-right-color", border_color));
 
   // Load geometry values
   auto w = m_conf.get(m_conf.section(), "width", "100%"s);
@@ -245,8 +259,8 @@ bar::bar(connection& conn, signal_emitter& emitter, const config& config, const 
     throw application_error("Resulting bar height is out of bounds (" + to_string(m_opts.size.h) + ")");
   }
 
-  m_opts.size.w = math_util::cap<int>(m_opts.size.w, 0, m_opts.monitor->w);
-  m_opts.size.h = math_util::cap<int>(m_opts.size.h, 0, m_opts.monitor->h);
+  // m_opts.size.w = math_util::cap<int>(m_opts.size.w, 0, m_opts.monitor->w);
+  // m_opts.size.h = math_util::cap<int>(m_opts.size.h, 0, m_opts.monitor->h);
 
   m_opts.center.y = m_opts.size.h;
   m_opts.center.y -= m_opts.borders[edge::BOTTOM].size;
@@ -259,8 +273,7 @@ bar::bar(connection& conn, signal_emitter& emitter, const config& config, const 
   m_opts.center.x += m_opts.borders[edge::LEFT].size;
 
   m_log.trace("bar: Create renderer");
-  auto fonts = m_conf.get_list(m_conf.section(), "font", {});
-  m_renderer = renderer::make(m_opts, move(fonts));
+  m_renderer = renderer::make(m_opts);
 
   m_log.trace("bar: Attaching sink to registry");
   m_connection.attach_sink(this, SINK_PRIORITY_BAR);
@@ -290,7 +303,6 @@ bar::bar(connection& conn, signal_emitter& emitter, const config& config, const 
 
   m_log.trace("bar: Drawing empty bar");
   m_renderer->begin();
-  m_renderer->fill_background();
   m_renderer->end();
 
   m_sig.attach(this);
@@ -346,8 +358,6 @@ void bar::parse(string&& data, bool force) {
     }
   }
 
-  m_renderer->fill_background();
-
   try {
     m_parser->parse(settings(), data);
   } catch (const parser_error& err) {
@@ -357,7 +367,7 @@ void bar::parse(string&& data, bool force) {
   m_renderer->end();
 
   const auto check_dblclicks = [&]() -> bool {
-    for (auto&& action : m_renderer->get_actions()) {
+    for (auto&& action : m_renderer->actions()) {
       if (static_cast<uint8_t>(action.button) >= static_cast<uint8_t>(mousebtn::DOUBLE_LEFT)) {
         return true;
       }
@@ -502,7 +512,7 @@ void bar::handle(const evt::destroy_notify& evt) {
  * _NET_WM_WINDOW_OPACITY atom value
  */
 void bar::handle(const evt::enter_notify&) {
-#if DEBUG
+#ifdef DEBUG_SHADED
   if (m_opts.origin == edge::TOP) {
     m_taskqueue->defer_unique("window-hover", 25ms, [&](size_t) { m_sig.emit(signals::ui::unshade_window{}); });
     return;
@@ -526,7 +536,7 @@ void bar::handle(const evt::enter_notify&) {
  * _NET_WM_WINDOW_OPACITY atom value
  */
 void bar::handle(const evt::leave_notify&) {
-#if DEBUG
+#ifdef DEBUG_SHADED
   if (m_opts.origin == edge::TOP) {
     m_taskqueue->defer_unique("window-hover", 25ms, [&](size_t) { m_sig.emit(signals::ui::shade_window{}); });
     return;
@@ -563,7 +573,7 @@ void bar::handle(const evt::button_press& evt) {
   m_buttonpress_pos = evt->event_x;
 
   const auto deferred_fn = [&](size_t) {
-    for (auto&& action : m_renderer->get_actions()) {
+    for (auto&& action : m_renderer->actions()) {
       if (action.button == m_buttonpress_btn && !action.active && action.test(m_buttonpress_pos)) {
         m_log.trace("Found matching input area");
         m_sig.emit(button_press{string{action.command}});
@@ -618,7 +628,7 @@ void bar::handle(const evt::expose& evt) {
     }
 
     m_log.trace("bar: Received expose event");
-    m_renderer->flush(false);
+    m_renderer->flush();
   }
 }
 
@@ -635,7 +645,7 @@ void bar::handle(const evt::expose& evt) {
  * pseudo-transparent background when it changes
  */
 void bar::handle(const evt::property_notify& evt) {
-#ifdef DEBUG_LOGGER_TRACE
+#ifdef DEBUG_LOGGER_VERBOSE
   string atom_name = m_connection.get_atom_name(evt->atom).name();
   m_log.trace_x("bar: property_notify(%s)", atom_name);
 #endif
@@ -669,7 +679,7 @@ bool bar::on(const signals::ui::unshade_window&) {
           m_sig.emit(signals::ui::tick{});
         }
         if (!remaining) {
-          m_renderer->flush(false);
+          m_renderer->flush();
         }
         if (m_opts.dimmed) {
           m_opts.dimmed = false;
@@ -708,7 +718,7 @@ bool bar::on(const signals::ui::shade_window&) {
           m_sig.emit(signals::ui::tick{});
         }
         if (!remaining) {
-          m_renderer->flush(false);
+          m_renderer->flush();
         }
         if (!m_opts.dimmed) {
           m_opts.dimmed = true;

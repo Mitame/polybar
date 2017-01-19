@@ -52,7 +52,6 @@ flags.append('-I'+ DirectoryOfThisScript() +'/lib/concurrentqueue/include')
 flags.append('-I'+ DirectoryOfThisScript() +'/lib/i3ipcpp/include')
 flags.append('-I'+ DirectoryOfThisScript() +'/lib/xpp/include')
 flags.append('-I'+ DirectoryOfThisScript() +'/tests')
-flags.append('-I/usr/include/freetype2')
 flags.append('-I/usr/include')
 
 def MakeRelativePathsInFlagsAbsolute( flags, working_directory ):
